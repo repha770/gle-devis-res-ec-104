@@ -34,18 +34,8 @@ def parse_page(
     siren_pro: str,
 ) -> dict:
     """
-    Extraction page -> une ligne du tableau Recensement
-    Logique validée sur le devis page 20 :
-
-    - Bloc travaux (ADRESSE DES TRAVAUX :) :
-        O,P,Q  = adresse / CP / ville (1er CP du bloc)
-        T,U,V,W = NOM DU SITE + même adresse / CP / ville
-
-    - Bloc haut droite :
-        X = RAISON SOCIALE bénéficiaire (ligne après DEVIS <num>)
-        Y = SIREN (9 premiers chiffres après Siret :)
-        Z,AA,AB = adresse / CP / ville haut droite
-        AC,AD   = Tél / Mail
+    Extraction d'une page -> ligne du tableau Recensement
+    Logique validée sur les devis page 20 (2025-1424) et 26 (2025-1418).
     """
 
     data: dict = {}
@@ -55,14 +45,13 @@ def parse_page(
     data["Code Fiche"] = "RES-EC-104"
     data["Type de trame (TOP/TPM)"] = ""
 
-    # Demandeur / mandataire
     data["RAISON SOCIALE \ndu demandeur"] = raison_sociale_demandeur
     data["SIREN \ndu demandeur"] = siren_demandeur
     data[" Raison sociale du mandataire assurant le rôle actif et incitatif"] = ""
     data["Numéro SIREN du mandataire assurant le rôle actif et incitatif"] = ""
     data["Nature de la bonification"] = "ZNI"
 
-    # Référence / dates / montants
+    # Référence / dates / prime
     ref_interne = extract_first(r"Numéro Client\s*:\s*(.+)", text)
     data["REFERENCE interne de l'opération"] = ref_interne
 
@@ -73,85 +62,91 @@ def parse_page(
     prime_cee_raw = extract_first(r"Prime CEE\s*:\s*([0-9\s\u00A0,]+)\s*€", text)
     data["MONTANT de l'incitation financière CEE"] = clean_money(prime_cee_raw)
 
-    # ========= BLOC TRAVAUX : O,P,Q et T,U,V,W =========
+    # ========= BLOC ADRESSE DES TRAVAUX =========
 
-    bloc_travaux = ""
-    if "ADRESSE DES TRAVAUX" in text:
-        bloc_travaux = text.split("ADRESSE DES TRAVAUX", 1)[1]
-    # couper avant Tél / Représenté par / etc.
-    for stop_kw in ["Tél", "Tel", "Représenté par", "Détail Quantité", "Nombre de dépose"]:
-        if stop_kw in bloc_travaux:
-            bloc_travaux = bloc_travaux.split(stop_kw, 1)[0]
-    # enlever les Siret éventuels
-    bloc_travaux = re.sub(r"Siret\s*:\s*\d+", "", bloc_travaux)
+    bloc = ""
+    if "ADRESSE DES TRAVAUX :" in text:
+        bloc = text.split("ADRESSE DES TRAVAUX :", 1)[1]
+    elif "ADRESSE DES TRAVAUX" in text:
+        bloc = text.split("ADRESSE DES TRAVAUX", 1)[1]
 
-    lignes_t = [l.strip() for l in bloc_travaux.splitlines() if l.strip()]
-
-    # NOM DU SITE = 1re ligne du bloc travaux
-    nom_site = lignes_t[0] if lignes_t else ""
-    data["NOM DU SITE bénéficiaire \nde l'opération"] = nom_site
-
-    # Trouver le PREMIER CP + ville du bloc travaux (pour O,P,Q et U,V,W)
-    adr_travaux = ""
-    cp_travaux = ""
-    ville_travaux = ""
-    for idx, li in enumerate(lignes_t):
-        m = re.search(r"(\d{5})\s+(.+)", li)
-        if m:
-            cp_travaux = m.group(1)
-            ville_travaux = m.group(2).strip()
-            if idx > 0:
-                adr_travaux = lignes_t[idx - 1]
+    # On coupe le bloc avant le détail des lignes de devis
+    for stop in ["Détail Quantité", "Detail Quantité"]:
+        if stop in bloc:
+            bloc = bloc.split(stop, 1)[0]
             break
 
-    # Colonnes O,P,Q => bloc travaux (1er CP)
-    data["ADRESSE \nde l'opération"] = adr_travaux
-    data["CODE POSTAL\n(sans cedex)"] = cp_travaux
-    data["VILLE\n"] = ville_travaux
+    # On enlève les SIRET dans ce bloc
+    bloc = re.sub(r"Siret\s*:\s*\d+", "", bloc)
 
-    # Colonnes T,U,V,W => NOM DU SITE + même adresse / CP / ville
-    data["ADRESSE \nde l'opération.1"] = adr_travaux
-    data["CODE POSTAL\n(sans cedex).1"] = cp_travaux
-    data["VILLE"] = ville_travaux
+    lignes_all = [l.strip() for l in bloc.splitlines() if l.strip()]
 
-    # ========= BLOC HAUT DROITE : X,Y,Z,AA,AB,AC,AD =========
+    # NOM DU SITE = 1ère ligne après "ADRESSE DES TRAVAUX :"
+    nom_site = lignes_all[0] if lignes_all else ""
+    data["NOM DU SITE bénéficiaire \nde l'opération"] = nom_site
 
-    # Raison sociale bénéficiaire = ligne après "DEVIS <num>"
+    # On sépare bloc TRAVAUX et bloc HAUT-DROITE en coupant au 1er CP
+    idx_cp1 = None
+    cp1 = ville1 = ""
+    adr1 = ""
+    for idx, li in enumerate(lignes_all):
+        m = re.search(r"(\d{5})\s+(.+)", li)
+        if m:
+            idx_cp1 = idx
+            cp1 = m.group(1)
+            ville1 = m.group(2).strip()
+            if idx > 0:
+                adr1 = lignes_all[idx - 1]
+            break
+
+    if idx_cp1 is not None:
+        travaux_lines = lignes_all[: idx_cp1 + 1]
+        haut_lines = lignes_all[idx_cp1 + 1 :]
+    else:
+        travaux_lines = lignes_all
+        haut_lines = []
+
+    # ==== Colonnes O, P, Q : bloc TRAVAUX ====
+    data["ADRESSE \nde l'opération"] = adr1
+    data["CODE POSTAL\n(sans cedex)"] = cp1
+    data["VILLE\n"] = ville1
+
+    # ==== Colonnes T, U, V, W : même bloc TRAVAUX ====
+    data["ADRESSE \nde l'opération.1"] = adr1
+    data["CODE POSTAL\n(sans cedex).1"] = cp1
+    data["VILLE"] = ville1
+
+    # ========= BLOC HAUT-DROITE (adresse siège) =========
+
+    adr2 = cp2 = ville2 = ""
+    for idx, li in enumerate(haut_lines):
+        m = re.search(r"(\d{5})\s+(.+)", li)
+        if m:
+            cp2 = m.group(1)
+            ville2 = m.group(2).strip()
+            # Si la ligne précédente ne contient pas de CP, on la prend comme adresse,
+            # sinon on prend la ligne elle-même (cas "VILLELE ANTENNE 4, 97460 SAINT-PAUL")
+            if idx > 0 and not re.search(r"\d{5}\s", haut_lines[idx - 1]):
+                adr2 = haut_lines[idx - 1]
+            else:
+                adr2 = li
+            break
+
+    # RAISON SOCIALE bénéficiaire (X)
     rs_benef = extract_first(r"DEVIS\s+[^\s]+\s+(.+)", text)
     data["RAISON SOCIALE \ndu bénéficiaire \nde l'opération"] = rs_benef
 
-    # SIREN = 9 premiers chiffres après Siret
+    # SIREN bénéficiaire (Y)
     siret_benef = extract_first(r"Siret\s*:\s*([0-9]{9,14})", text)
     siren_benef = siret_benef[:9] if len(siret_benef) >= 9 else ""
     data["SIREN"] = siren_benef
 
-    # Bloc après ce Siret, jusqu'à "Tél"
-    adr_siege = ""
-    cp_siege = ""
-    ville_siege = ""
-    if siret_benef:
-        try:
-            # on découpe le texte après le SIRET et avant Tél
-            after_siret = text.split(siret_benef, 1)[1]
-            if "Tél" in after_siret:
-                after_siret = after_siret.split("Tél", 1)[0]
-            lignes_haut = [l.strip() for l in after_siret.splitlines() if l.strip()]
-            for idx, li in enumerate(lignes_haut):
-                m = re.search(r"(\d{5})\s+(.+)", li)
-                if m:
-                    cp_siege = m.group(1)
-                    ville_siege = m.group(2).strip()
-                    if idx > 0:
-                        adr_siege = lignes_haut[idx - 1]
-                    break
-        except Exception:
-            pass
+    # Z / AA / AB = adresse / CP / ville du bloc haut-droite (ou fallback travaux)
+    data["ADRESSE \ndu siège social du bénéficiaire de l'opération"] = adr2 or adr1
+    data["CODE POSTAL\n(sans cedex).2"] = cp2 or cp1
+    data["VILLE.1"] = ville2 or ville1
 
-    data["ADRESSE \ndu siège social du bénéficiaire de l'opération"] = adr_siege
-    data["CODE POSTAL\n(sans cedex).2"] = cp_siege
-    data["VILLE.1"] = ville_siege
-
-    # Téléphone / mail (bloc haut droite)
+    # ========= Téléphone / Mail =========
     tel = extract_first(r"Tél\s*:\s*(.+)", text)
     mail = extract_first(r"Mail\s*:\s*(.+)", text)
     mail_clean = "" if mail.lower().startswith("néant") else mail
@@ -161,19 +156,32 @@ def parse_page(
     data["Numéro de téléphone du bénéficiaire.1"] = tel
     data["Adresse de courriel du bénéficiaire.1"] = mail_clean
 
-    # ========= Pro (GLE ou autre) =========
+    # ========= Colonnes M / N : NOM / PRENOM à partir de "Représenté par" =========
+    repres = extract_first(r"Représenté par\s*:\s*(.+)", text)
+    nom_benef = ""
+    prenom_benef = ""
+    if repres:
+        repres_clean = re.sub(r",.*", "", repres).strip()
+        parts = repres_clean.split()
+        if len(parts) >= 2:
+            nom_benef = parts[0]
+            prenom_benef = " ".join(parts[1:])
+        elif len(parts) == 1:
+            nom_benef = parts[0]
+    data["NOM \ndu bénéficiaire \nde l'opération "] = nom_benef
+    data["PRENOM \ndu bénéficiaire \nde l'opération"] = prenom_benef
+
+    # ========= Professionnel (GLE) =========
     data["SIREN du professionnel mettant en œuvre l’opération d’économies d’énergie"] = siren_pro
     data["RAISON SOCIALE du professionnel mettant en œuvre l’opération d’économies d’énergie"] = raison_sociale_pro
     data["RAISON SOCIALE du professionnel qui figure sur le devis"] = raison_sociale_pro
     data["SIREN du professionnel qui figure sur le devis"] = siren_pro
 
-    # ========= Devis / montants =========
+    # ========= Devis & montants =========
     num_devis = extract_first(r"DEVIS\s+([^\s]+)", text)
     data["NUMERO de  devis"] = num_devis
-
     data["MONTANT du devis (€ TTC)"] = clean_money(prime_cee_raw)
 
-    # Nombre de luminaires
     nb_depose = extract_first(r"Nombre de dépose\s*:\s*([0-9]+)", text)
     data["Nombre de luminaires installés ou à installer"] = int(nb_depose) if nb_depose.isdigit() else math.nan
 
@@ -186,13 +194,9 @@ st.set_page_config(page_title="Devis LED → Tableau RES-EC-104", layout="wide")
 
 st.title("📊 Devis LED → Tableau RES-EC-104")
 
-st.write(
-    "Upload le **PDF de devis (1 devis par page)** et ton **modèle Excel RES-EC-104** (onglet *Recensement*)."
-)
-
 col1, col2 = st.columns(2)
 with col1:
-    pdf_file = st.file_uploader("📄 PDF des devis", type=["pdf"])
+    pdf_file = st.file_uploader("📄 PDF des devis (1 devis par page)", type=["pdf"])
 with col2:
     template_file = st.file_uploader("📑 Modèle Excel RES-EC-104 (onglet 'Recensement')", type=["xlsx"])
 
@@ -214,14 +218,12 @@ if pdf_file and template_file:
             n_pages = len(reader.pages)
             st.success(f"PDF chargé : {n_pages} devis détectés")
 
-            # On lit le modèle pour récupérer l'ordre et les noms de colonnes exacts
             df_template = pd.read_excel(template_file, sheet_name="Recensement")
             cols_modele = list(df_template.columns)
 
             rows = []
             for i in range(n_pages):
-                page = reader.pages[i]
-                txt = page.extract_text()
+                txt = reader.pages[i].extract_text()
                 row = parse_page(
                     txt,
                     i,
@@ -234,7 +236,6 @@ if pdf_file and template_file:
 
             df_new = pd.DataFrame(rows)
 
-            # On aligne strictement sur les colonnes du modèle
             df_out = pd.DataFrame(columns=cols_modele)
             for col in cols_modele:
                 if col in df_new.columns:
@@ -242,10 +243,9 @@ if pdf_file and template_file:
                 else:
                     df_out[col] = None
 
-            st.subheader("Aperçu du tableau généré")
+            st.subheader("Aperçu")
             st.dataframe(df_out.head())
 
-            # Export Excel
             buffer = BytesIO()
             with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
                 df_out.to_excel(writer, sheet_name="Recensement", index=False)
