@@ -161,15 +161,20 @@ def parse_page(
     nom_benef = ""
     prenom_benef = ""
     if repres:
+        # On enlève la virgule et ce qui suit (", GERANT" etc.)
         repres_clean = re.sub(r",.*", "", repres).strip()
         parts = repres_clean.split()
         if len(parts) >= 2:
-            nom_benef = parts[0]
-            prenom_benef = " ".join(parts[1:])
+            # 👉 NOM = tous les mots sauf le dernier
+            # 👉 PRENOM = dernier mot
+            prenom_benef = parts[-1]
+            nom_benef = " ".join(parts[:-1])
         elif len(parts) == 1:
             nom_benef = parts[0]
+
     data["NOM \ndu bénéficiaire \nde l'opération "] = nom_benef
     data["PRENOM \ndu bénéficiaire \nde l'opération"] = prenom_benef
+
 
     # ========= Professionnel (GLE) =========
     data["SIREN du professionnel mettant en œuvre l’opération d’économies d’énergie"] = siren_pro
