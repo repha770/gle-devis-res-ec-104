@@ -70,7 +70,7 @@ def parse_page(
     elif "ADRESSE DES TRAVAUX" in text:
         bloc = text.split("ADRESSE DES TRAVAUX", 1)[1]
 
-    # On coupe le bloc avant le détail des lignes de devis
+    # On coupe le bloc avant le tableau de détail
     for stop in ["Détail Quantité", "Detail Quantité"]:
         if stop in bloc:
             bloc = bloc.split(stop, 1)[0]
@@ -106,12 +106,12 @@ def parse_page(
         travaux_lines = lignes_all
         haut_lines = []
 
-    # ==== Colonnes O, P, Q : bloc TRAVAUX ====
+    # ==== Colonnes O, P, Q : bloc TRAVAUX (1er CP) ====
     data["ADRESSE \nde l'opération"] = adr1
     data["CODE POSTAL\n(sans cedex)"] = cp1
     data["VILLE\n"] = ville1
 
-    # ==== Colonnes T, U, V, W : même bloc TRAVAUX ====
+    # ==== Colonnes T, U, V, W : NOM DU SITE + mêmes valeurs que O,P,Q ====
     data["ADRESSE \nde l'opération.1"] = adr1
     data["CODE POSTAL\n(sans cedex).1"] = cp1
     data["VILLE"] = ville1
@@ -124,7 +124,7 @@ def parse_page(
         if m:
             cp2 = m.group(1)
             ville2 = m.group(2).strip()
-            # Si la ligne précédente ne contient pas de CP, on la prend comme adresse,
+            # si la ligne précédente ne contient pas de CP, on la prend comme adresse,
             # sinon on prend la ligne elle-même (cas "VILLELE ANTENNE 4, 97460 SAINT-PAUL")
             if idx > 0 and not re.search(r"\d{5}\s", haut_lines[idx - 1]):
                 adr2 = haut_lines[idx - 1]
@@ -194,11 +194,9 @@ st.set_page_config(page_title="Devis LED → Tableau RES-EC-104", layout="wide")
 
 st.title("📊 Devis LED → Tableau RES-EC-104")
 
-col1, col2 = st.columns(2)
-with col1:
-    pdf_file = st.file_uploader("📄 PDF des devis (1 devis par page)", type=["pdf"])
-with col2:
-    template_file = st.file_uploader("📑 Modèle Excel RES-EC-104 (onglet 'Recensement')", type=["xlsx"])
+st.write("1️⃣ Choisis le PDF des devis. 2️⃣ Je remplis automatiquement le modèle RES-EC-104 stocké dans l'app.")
+
+pdf_file = st.file_uploader("📄 PDF des devis (1 devis par page)", type=["pdf"])
 
 st.markdown("### Paramètres (GLE par défaut)")
 c1, c2, c3, c4 = st.columns(4)
@@ -211,15 +209,18 @@ with c3:
 with c4:
     siren_pro = st.text_input("SIREN professionnel", value="829067826")
 
-if pdf_file and template_file:
+if pdf_file:
     if st.button("🚀 Lancer l'extraction"):
         try:
+            # 1) On charge le modèle depuis le fichier stocké dans le repo
+            modele_path = "modele_res_ec_104.xlsx"  # <--- mets ton fichier modèle avec ce nom dans le même dossier que app.py
+            df_template = pd.read_excel(modele_path, sheet_name="Recensement")
+            cols_modele = list(df_template.columns)
+
+            # 2) Lecture du PDF
             reader = PdfReader(pdf_file)
             n_pages = len(reader.pages)
             st.success(f"PDF chargé : {n_pages} devis détectés")
-
-            df_template = pd.read_excel(template_file, sheet_name="Recensement")
-            cols_modele = list(df_template.columns)
 
             rows = []
             for i in range(n_pages):
@@ -236,6 +237,7 @@ if pdf_file and template_file:
 
             df_new = pd.DataFrame(rows)
 
+            # 3) Aligner sur les colonnes du modèle
             df_out = pd.DataFrame(columns=cols_modele)
             for col in cols_modele:
                 if col in df_new.columns:
@@ -246,6 +248,7 @@ if pdf_file and template_file:
             st.subheader("Aperçu")
             st.dataframe(df_out.head())
 
+            # 4) Export Excel
             buffer = BytesIO()
             with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
                 df_out.to_excel(writer, sheet_name="Recensement", index=False)
@@ -261,4 +264,4 @@ if pdf_file and template_file:
         except Exception as e:
             st.error(f"Erreur pendant l'extraction : {e}")
 else:
-    st.info("Uploade le PDF et le modèle Excel pour activer le bouton.")
+    st.info("Uploade le PDF des devis pour lancer l'extraction.")
